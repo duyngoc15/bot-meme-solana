@@ -1,0 +1,45 @@
+# Node.js
+node_modules/
+dist/
+*.tgz
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config files with sensitive data
+config.json
+token.txt
+*.token
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite3
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Output
+output/
+generated_memes/
+
+# TypeScript
+*.tsbuildinfo

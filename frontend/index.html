@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meme Coin Trading Bot Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 Meme Coin Trading Bot</h1>
+            <div class="header-status">
+                <span id="connection-status" class="status-badge disconnected">Disconnected</span>
+                <span id="last-update">Last update: Never</span>
+            </div>
+        </header>
+
+        <!-- Status Overview -->
+        <section class="card">
+            <h2>📊 Status Overview</h2>
+            <div class="status-grid">
+                <div class="status-item">
+                    <div class="status-label">System Status</div>
+                    <div id="system-status" class="status-value">-</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Trading Status</div>
+                    <div id="trading-status" class="status-value">-</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Candidates</div>
+                    <div id="candidate-count" class="status-value">0</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Tokens Found</div>
+                    <div id="tokens-found" class="status-value">0</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Metrics -->
+        <section class="card">
+            <h2>📈 Metrics</h2>
+            <div class="metrics-grid">
+                <div class="metric-item">
+                    <div class="metric-label">Tokens Found</div>
+                    <div id="metric-tokens-found" class="metric-value">0</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Tokens Filtered</div>
+                    <div id="metric-tokens-filtered" class="metric-value">0</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Candidates Listed</div>
+                    <div id="metric-candidates" class="metric-value">0</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Trades Executed</div>
+                    <div id="metric-executions" class="metric-value">0</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Risk Management -->
+        <section class="card">
+            <h2>⚠️ Risk Management</h2>
+            <div id="risk-content">
+                <div class="risk-info">Loading risk data...</div>
+            </div>
+        </section>
+
+        <!-- Token Candidates -->
+        <section class="card">
+            <h2>🎯 Token Candidates</h2>
+            <div class="candidates-header">
+                <button id="refresh-candidates" class="btn btn-primary">Refresh Candidates</button>
+            </div>
+            <div id="candidates-list" class="candidates-list">
+                <div class="loading">Loading candidates...</div>
+            </div>
+        </section>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
