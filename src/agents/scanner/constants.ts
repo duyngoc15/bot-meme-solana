@@ -1,6 +1,15 @@
 // Raydium AMM V4 Program ID — most meme coins create liquidity pools here
 export const RAYDIUM_AMM_V4_PROGRAM_ID = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
 
+// pump.fun → Raydium migration wrapper program
+export const MIGRATION_PROGRAM_ID = '39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg';
+export const PUMPSWAP_PROGRAM_ID = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
+
+// WebSocket timing constants
+export const RETRY_INTERVAL_MS = 2_000;       // Retry worker poll interval for truncated-log fallback
+export const RECONNECT_DELAY_MS = 5_000;      // Delay before reconnecting a dropped WS
+export const WS_TIMEOUT_MS = 60_000;          // Kill WS if no message received within this window
+
 // Raydium Fee Account - exclusively used during pool creation (initialize2).
 // WebSocket subscribes to this address to filter out swap noise and detect new pools.
 export const RAYDIUM_FEE_ACCOUNT = '7YttLkHDoNj9wyDur5pM1ejNaAvT9X4eqaYcHQqtj2G5';

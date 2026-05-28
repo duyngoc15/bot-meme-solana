@@ -49,13 +49,19 @@ export class Orchestrator {
 
     // Listen for tokens from scanner
     this.scanner.on('token', (token: TokenFound) => {
-      if (!this.stopped) this.processToken(token);
+      if (!this.stopped) {
+        this.processToken(token).catch(err =>
+          console.error(`Orchestrator: Unhandled error processing token ${token.tokenAddress}: ${(err as Error).message}`)
+        );
+      }
     });
 
     // Listen for candidates from listing
     this.listing.on('candidate', (candidate: CandidateToken) => {
       if (!this.stopped && this.config.autoExecute && candidate.strategyDecision.action === 'buy') {
-        this.executeCandidate(candidate);
+        this.executeCandidate(candidate).catch(err =>
+          console.error(`Orchestrator: Unhandled error executing candidate ${candidate.token.tokenAddress}: ${(err as Error).message}`)
+        );
       }
     });
 

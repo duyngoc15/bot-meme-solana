@@ -31,6 +31,7 @@ export interface Config {
   totalExposurePct: number;
   dailyLossLimit: number;
   accountBalance: number;
+  buyAmountSol: number;      // Fixed SOL amount to spend per trade
 
   // Execution settings
   maxSimulateRetries: number;
@@ -134,7 +135,8 @@ export function loadConfig(): Config {
     singlePositionPct: getEnvFloat('SINGLE_POSITION_PCT', 0.01),
     totalExposurePct: getEnvFloat('TOTAL_EXPOSURE_PCT', 0.05),
     dailyLossLimit: getEnvFloat('DAILY_LOSS_LIMIT', 500.0),
-    accountBalance: getEnvFloat('ACCOUNT_BALANCE', 10000.0),
+    accountBalance: getEnvFloat('ACCOUNT_BALANCE', 50.0),
+    buyAmountSol: getEnvFloat('BUY_AMOUNT_SOL', 0.1),
 
     // Execution
     maxSimulateRetries: getEnvInt('MAX_SIMULATE_RETRIES', 3),

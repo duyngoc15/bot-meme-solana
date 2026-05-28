@@ -42,31 +42,18 @@ export class PreFilterAgent {
       return result;
     }
 
-    // Check minimum liquidity
-    const totalLiquidity = token.initialLiquidity.reserveNative;
-    if (totalLiquidity < this.config.minLiquidity) {
-      result.dropped = true;
-      result.reasons.push('low_initial_liquidity');
-      console.log(
-        `PreFilterAgent: Token ${token.tokenAddress} dropped - low liquidity (${totalLiquidity.toFixed(2)} < ${this.config.minLiquidity.toFixed(2)})`
-      );
+    // Check liquidity
+    if (this.isLiquidityInsufficient(token, result)) {
       return result;
     }
 
     // Check for suspicious patterns in metadata
+    // Check for suspicious patterns in metadata
     if (this.hasSuspiciousMetadata(token)) {
-      result.priority = 'low';
+      result.dropped = true;
       result.reasons.push('suspicious_metadata');
-      console.log(`PreFilterAgent: Token ${token.tokenAddress} marked low priority - suspicious metadata`);
-    }
-
-    // Check for very high initial liquidity (potential whale)
-    if (totalLiquidity > 100000) {
-      result.priority = 'high';
-      result.reasons.push('high_initial_liquidity');
-      console.log(
-        `PreFilterAgent: Token ${token.tokenAddress} marked high priority - high liquidity (${totalLiquidity.toFixed(2)})`
-      );
+      console.log(`PreFilterAgent: Token ${token.tokenAddress} dropped - suspicious metadata`);
+      return result;
     }
 
     return result;
@@ -111,6 +98,50 @@ export class PreFilterAgent {
       }
     }
 
+    return false;
+  }
+
+  // isLiquidityInsufficient checks liquidity conditions for Pump.fun migrated tokens
+  // Returns true if token should be dropped
+  private isLiquidityInsufficient(token: TokenFound, result: PreFilteredToken): boolean {
+    const solReserve = token.initialLiquidity.reserveNative;
+    const buyAmountSol = this.config.buyAmountSol;
+    const ageSeconds = (Date.now() - token.firstSeenTS * 1000) / 1000;
+
+    // 1. Reserve bất thường - pool không đúng chuẩn migrate Pump.fun
+    if (solReserve < this.config.minLiquidity) {
+      result.dropped = true;
+      result.reasons.push('abnormal_sol_reserve');
+      console.log(
+        `PreFilterAgent: Token ${token.tokenAddress} dropped - abnormal reserve (${solReserve.toFixed(2)} SOL < 50 SOL)`
+      );
+      return true;
+    }
+
+    // 2. Price impact quá cao - tự làm hại mình khi mua
+    const priceImpact = buyAmountSol / solReserve;
+    if (priceImpact > 0.03) {
+      result.dropped = true;
+      result.reasons.push('price_impact_too_high');
+      console.log(
+        `PreFilterAgent: Token ${token.tokenAddress} dropped - price impact too high (${(priceImpact * 100).toFixed(2)}% > 3%)`
+      );
+      return true;
+    }
+
+    // 3. Detect quá trễ - cơ hội đã qua (thời gian này sẽ được xem xét lại)
+    if (ageSeconds > 300) {
+      result.dropped = true;
+      result.reasons.push('detected_too_late');
+      console.log(
+        `PreFilterAgent: Token ${token.tokenAddress} dropped - detected too late (${ageSeconds.toFixed(0)}s > 300s)`
+      );
+      return true;
+    }
+
+    console.log(
+      `PreFilterAgent: Token ${token.tokenAddress} passed liquidity check - reserve: ${solReserve.toFixed(2)} SOL, priceImpact: ${(priceImpact * 100).toFixed(2)}%, age: ${ageSeconds.toFixed(0)}s`
+    );
     return false;
   }
 }

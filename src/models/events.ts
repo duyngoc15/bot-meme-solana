@@ -53,9 +53,11 @@ export interface OwnerControls {
 // SimulatedSellResult details
 export interface SimulatedSellResult {
   success: boolean;
-  slippage: number;
-  gasUsed?: number;
-  error?: string;
+  slippage: number;          // price impact khi bán
+  priceImpactBuy?: number;   // price impact khi mua
+  solReceivedNoPump?: number; // SOL nhận được nếu giá không đổi
+  netProfitAt25pct?: number; // net profit nếu giá tăng 25%
+  netProfitAt2x?: number;    // net profit nếu giá tăng 2x
 }
 
 // OffChainMetrics from OffChainDataAgent

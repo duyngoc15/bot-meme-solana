@@ -1,7 +1,4 @@
-import type { HeliusClient } from './helius-client.js';
 import { heliusRpcUrl } from './helius-client.js';
-
-// --- Transaction types (kept for our Raydium parsing logic) ---
 
 export interface TransactionResult {
   slot: number;
@@ -53,9 +50,29 @@ export interface InnerInstructionSet {
   instructions: TransactionInstruction[];
 }
 
+export interface AccountInfo {
+  context: { slot: number };
+  value: {
+    lamports: number;
+    owner: string;
+    executable: boolean;
+    rentEpoch: number;
+    data: {
+      parsed: {
+        info: {
+          mintAuthority: string | null;
+          freezeAuthority: string | null;
+          supply: string;
+          decimals: number;
+          isInitialized: boolean;
+        };
+        type: string;
+      };
+      program: string;
+    };
+  } | null;
+}
 
-
-// SolanaRPCClient uses Helius SDK's RPC endpoint for JSON-RPC calls
 export class SolanaRPCClient {
   private rpcUrl: string;
   private requestId: number = 0;
@@ -64,9 +81,6 @@ export class SolanaRPCClient {
     this.rpcUrl = heliusRpcUrl(apiKey);
   }
 
-
-
-  // getTransaction fetches full transaction details
   async getTransaction(signature: string): Promise<TransactionResult | null> {
     const result = await this.call('getTransaction', [
       signature,
@@ -75,7 +89,14 @@ export class SolanaRPCClient {
     return result === null ? null : (result as TransactionResult);
   }
 
-  // call performs a JSON-RPC call with retry logic
+  async getParsedAccountInfo(address: string): Promise<AccountInfo> {
+    const result = await this.call('getAccountInfo', [
+      address,
+      { encoding: 'jsonParsed' },
+    ]);
+    return result as AccountInfo;
+  }
+
   private async call(method: string, params: unknown[]): Promise<unknown> {
     this.requestId++;
     const body = JSON.stringify({ jsonrpc: '2.0', id: this.requestId, method, params });
@@ -90,7 +111,8 @@ export class SolanaRPCClient {
       });
 
       if (resp.status === 429) {
-        const wait = (attempt + 1) * 2000;
+        if (attempt === maxRetries) throw new Error('Rate limit exceeded after max retries');
+        const wait = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
         console.log(`SolanaRPC: Rate limited, retrying in ${wait}ms (${attempt + 1}/${maxRetries})`);
         await new Promise(r => setTimeout(r, wait));
         continue;

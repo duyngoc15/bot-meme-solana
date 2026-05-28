@@ -34,21 +34,21 @@ export class SolanaWSClient extends EventEmitter {
 
       // Step 2: Subscribe with AbortController for cleanup
       this.abortController = new AbortController();
-      const iterable = await plan.subscribe({ abortSignal: this.abortController.signal });
+      const logs = await plan.subscribe({ abortSignal: this.abortController.signal });
 
       console.log('SolanaWS: ✅ Subscribed to Raydium logs via Helius SDK');
 
       // Step 3: Process notifications in background (non-blocking)
-      this.processNotifications(iterable);
+      this.processNotifications(logs);
     } catch (err) {
       throw new Error(`Helius WS subscription failed: ${(err as Error).message}`);
     }
   }
 
   // processNotifications iterates the AsyncIterable from helius-sdk
-  private async processNotifications(iterable: AsyncIterable<any>): Promise<void> {
+  private async processNotifications(logs: AsyncIterable<any>): Promise<void> {
     try {
-      for await (const notification of iterable) {
+      for await (const notification of logs) {
         if (this.done) break;
 
         // helius-sdk / @solana/kit format: { context: { slot }, value: { signature, err, logs } }
