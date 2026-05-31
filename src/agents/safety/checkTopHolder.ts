@@ -17,6 +17,9 @@ export interface HolderCheckResult {
     top5Percent: number;
     holderCount: number;
     creatorHolding: number;
+    earlyBuyerCount: number;
+    earlySellerCount: number;
+    activityCount: number;
 }
 
 // ── Helper: build drop result ──────────────────────────────────
@@ -31,6 +34,9 @@ function buildDropResult(
         top5Percent: extra?.top5Percent ?? 0,
         holderCount: extra?.holderCount ?? 0,
         creatorHolding: extra?.creatorHolding ?? 0,
+        earlyBuyerCount: extra?.earlyBuyerCount ?? 0,
+        earlySellerCount: extra?.earlySellerCount ?? 0,
+        activityCount: extra?.activityCount ?? 0,
     };
 }
 
@@ -158,54 +164,59 @@ export async function checkTopHolderConcentration(
         }
 
         // ── Step 3: Fetch transactions song song ──────────────────
-        // Fetch signatures của mint address (token transactions)
-        // + signatures của ATA (token account) của top holders để check early sell
-        //
-        // NOTE: Dùng tokenAccount (ATA) thay vì owner wallet:
+        // Dùng ATA thay vì owner wallet để tránh false positive:
         //   - ATA chỉ chứa tx liên quan đúng token này
-        //   - Loại bỏ false positive từ SOL transfer, swap token khác, v.v.
-        //   - Số RPC calls không thay đổi
+        //   - Loại bỏ false positive từ SOL transfer, swap token khác
         const topHolderATAs = holderInfos
             .slice(0, 5)
-            .map(h => h.tokenAccount)  // ← ATA address, không phải owner wallet
+            .map(h => h.tokenAccount)
             .filter(a => a !== '');
 
         const [mintSigs, ...holderSigs] = await Promise.all([
             rpcClient.getSignaturesForAddress(mintAddress, 30),
             ...topHolderATAs.map(ata =>
-                rpcClient.getSignaturesForAddress(ata, 10)  // ← tx chỉ của token này
+                rpcClient.getSignaturesForAddress(ata, 10)
             ),
         ]);
 
         // ── Step 3a: Early bundle check ───────────────────────────
-        // Lấy slot của migration tx để làm baseline
+        // Tìm migration slot làm baseline để detect coordinated bundle
         const migrationSlot = mintSigs.find(
-            s => s.blockTime !== null &&
-                Math.abs(s.blockTime - migrateTS) < 5
+            s => s.blockTime !== null && Math.abs(s.blockTime - migrateTS) < 5
         )?.slot ?? 0;
 
-        // Các tx trong block 1-3 sau migrate
-        const earlyBuyers = mintSigs.filter(sig =>
-            sig.err === null &&
-            sig.slot > 0 &&
-            migrationSlot > 0 &&
-            sig.slot - migrationSlot <= 3 &&
-            sig.slot > migrationSlot
-        );
-
-        console.log(
-            `HolderCheck: Early buyers in first 3 blocks: ${earlyBuyers.length}`
-        );
-
-        if (earlyBuyers.length > 3) {
-            return buildDropResult(
-                [`early_bundle_${earlyBuyers.length}_buyers`],
-                { top1Percent, top5Percent, holderCount, creatorHolding }
+        let earlyBuyerCount = 0;
+        if (migrationSlot === 0) {
+            // Không tìm được slot → có thể RPC chưa index kịp hoặc blockTime lệch
+            // Skip early bundle check, không drop — tránh bỏ lỡ token tốt
+            console.warn(
+                `HolderCheck: Migration slot not found for ${mintAddress.substring(0, 16)}... ` +
+                `(migrateTS: ${migrateTS}) — skipping early bundle check`
             );
+        } else {
+            const earlyBuyers = mintSigs.filter(sig =>
+                sig.err === null &&
+                sig.slot > migrationSlot &&
+                sig.slot - migrationSlot <= 3
+            );
+            earlyBuyerCount = earlyBuyers.length;
+
+            console.log(
+                `HolderCheck: Early buyers in first 3 blocks: ${earlyBuyerCount} ` +
+                `(migrationSlot: ${migrationSlot})`
+            );
+
+            if (earlyBuyerCount > 3) {
+                return buildDropResult(
+                    [`early_bundle_${earlyBuyerCount}_buyers`],
+                    { top1Percent, top5Percent, holderCount, creatorHolding, earlyBuyerCount }
+                );
+            }
         }
 
         // ── Step 3b: Early sell check ─────────────────────────────
-        // Top holders có bán trong 2 phút đầu không?
+        // Check ATA của top holders có tx trong 2 phút đầu không
+        // Dùng ATA → chỉ tx của token này, không có false positive
         const twoMinutesAfterMigrate = migrateTS + 120;
         const earlySellerCount = holderSigs.filter(sigs =>
             sigs.some(sig =>
@@ -217,29 +228,24 @@ export async function checkTopHolderConcentration(
         ).length;
 
         console.log(
-            `HolderCheck: Top holders selling in first 2 minutes: ${earlySellerCount}`
+            `HolderCheck: Top holders with activity in first 2 minutes: ${earlySellerCount}`
         );
 
         if (earlySellerCount >= 2) {
-            // 2+ top holders bán trong 2 phút → đang dump
             return buildDropResult(
                 [`early_sell_${earlySellerCount}_holders`],
-                { top1Percent, top5Percent, holderCount, creatorHolding }
+                { top1Percent, top5Percent, holderCount, creatorHolding, earlyBuyerCount, earlySellerCount }
             );
         }
 
-        // ── Step 3c: Holder count trend ───────────────────────────
-        // Đếm số tx buy vs sell trong 60 giây đầu
-        const first60s = mintSigs.filter(sig =>
+        // ── Step 3c: Activity trend in first 60s ─────────────────
+        const activityCount = mintSigs.filter(sig =>
             sig.err === null &&
             sig.blockTime !== null &&
             sig.blockTime >= migrateTS &&
             sig.blockTime <= migrateTS + 60
-        );
+        ).length;
 
-        // Đây là approximation — tx nhiều = activity nhiều = healthy
-        // Tx ít = không ai quan tâm
-        const activityCount = first60s.length;
         console.log(
             `HolderCheck: Activity in first 60s: ${activityCount} txs`
         );
@@ -247,6 +253,9 @@ export async function checkTopHolderConcentration(
         // ── Tổng hợp warnings ─────────────────────────────────────
         const reasons: string[] = [];
 
+        if (migrationSlot === 0) {
+            reasons.push('migration_slot_not_found');
+        }
         if (creatorHolding > 0) {
             reasons.push(`creator_holding_warning_${creatorHolding.toFixed(1)}pct`);
         }
@@ -273,11 +282,13 @@ export async function checkTopHolderConcentration(
             top5Percent,
             holderCount,
             creatorHolding,
+            earlyBuyerCount,
+            earlySellerCount,
+            activityCount,
         };
 
     } catch (err) {
         console.error(`HolderCheck: RPC error for ${mintAddress}:`, err);
-        // Không drop khi RPC lỗi → tránh bỏ lỡ token tốt do rate limit
         return {
             shouldDrop: false,
             reasons: ['holder_check_rpc_failed'],
@@ -285,6 +296,9 @@ export async function checkTopHolderConcentration(
             top5Percent: 0,
             holderCount: 0,
             creatorHolding: 0,
+            earlyBuyerCount: 0,
+            earlySellerCount: 0,
+            activityCount: 0,
         };
     }
 }
