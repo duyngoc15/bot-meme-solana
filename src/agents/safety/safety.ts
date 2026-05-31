@@ -1,6 +1,7 @@
 import type { Config } from '../../config/config.js';
 import type { PreFilteredToken, SafetyReport, SimulatedSellResult, OwnerControls } from '../../models/events.js';
 import { SolanaRPCClient } from '../scanner/solana-rpc.js';
+import { checkTopHolderConcentration } from './checkTopHolder.js';
 
 // OnChainSafetyAgent performs honeypot and safety checks
 export class OnChainSafetyAgent {
@@ -100,6 +101,19 @@ export class OnChainSafetyAgent {
         report.canSell = false;
         report.reasons.push('simulate_sell_failed');
         return;
+      }
+
+      // 6. Top holder concentration check
+      const holderCheck = await checkTopHolderConcentration(token, this.rpcClient);
+      if (holderCheck.shouldDrop) {
+        report.canBuy = false;
+        report.canSell = false;
+        report.reasons.push(...holderCheck.reasons);
+        console.log(`OnChainSafetyAgent: Token ${address} failed holder check: ${holderCheck.reasons.join(', ')}`);
+        return;
+      }
+      if (holderCheck.reasons.length > 0) {
+        report.reasons.push(...holderCheck.reasons);
       }
 
     } catch (err) {

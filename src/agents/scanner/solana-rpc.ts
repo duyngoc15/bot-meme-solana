@@ -65,12 +65,48 @@ export interface AccountInfo {
           supply: string;
           decimals: number;
           isInitialized: boolean;
+          owner?: string;
+          tokenAmount?: {
+            amount: string;
+            decimals: number;
+            uiAmount: number | null;
+          };
         };
         type: string;
       };
       program: string;
     };
   } | null;
+}
+
+export interface TokenLargestAccountsResponse {
+  context: { slot: number; apiVersion?: string };
+  value: Array<{
+    address: string;
+    amount: string;
+    decimals: number;
+    uiAmount: number | null;
+    uiAmountString: string;
+  }>;
+}
+
+export interface TokenSupplyResponse {
+  context: { slot: number; apiVersion?: string };
+  value: {
+    amount: string;
+    decimals: number;
+    uiAmount: number | null;
+    uiAmountString: string;
+  };
+}
+
+export interface SignatureInfo {
+  signature: string;
+  slot: number;
+  blockTime: number | null;
+  err: unknown | null;
+  memo: string | null;
+  confirmationStatus: string | null;
 }
 
 export class SolanaRPCClient {
@@ -81,6 +117,7 @@ export class SolanaRPCClient {
     this.rpcUrl = heliusRpcUrl(apiKey);
   }
 
+  // getTransaction fetches full transaction details
   async getTransaction(signature: string): Promise<TransactionResult | null> {
     const result = await this.call('getTransaction', [
       signature,
@@ -89,12 +126,46 @@ export class SolanaRPCClient {
     return result === null ? null : (result as TransactionResult);
   }
 
+  // getParsedAccountInfo fetches parsed account data
+  // Dùng cho: mint account (mintAuthority, freezeAuthority)
+  //           token account/ATA (owner của holder)
   async getParsedAccountInfo(address: string): Promise<AccountInfo> {
     const result = await this.call('getAccountInfo', [
       address,
       { encoding: 'jsonParsed' },
     ]);
     return result as AccountInfo;
+  }
+
+  // getTokenLargestAccounts fetches top 20 largest token holders
+  async getTokenLargestAccounts(mintAddress: string): Promise<TokenLargestAccountsResponse> {
+    const result = await this.call('getTokenLargestAccounts', [
+      mintAddress,
+      { commitment: 'confirmed' },
+    ]);
+    return result as TokenLargestAccountsResponse;
+  }
+
+  // getTokenSupply fetches total supply of a token
+  async getTokenSupply(mintAddress: string): Promise<TokenSupplyResponse> {
+    const result = await this.call('getTokenSupply', [
+      mintAddress,
+      { commitment: 'confirmed' },
+    ]);
+    return result as TokenSupplyResponse;
+  }
+
+  // getSignaturesForAddress fetches transaction signatures for an address
+  // Trả về newest first
+  async getSignaturesForAddress(
+    address: string,
+    limit: number = 20,
+  ): Promise<SignatureInfo[]> {
+    const result = await this.call('getSignaturesForAddress', [
+      address,
+      { limit, commitment: 'confirmed' },
+    ]);
+    return result as SignatureInfo[];
   }
 
   private async call(method: string, params: unknown[]): Promise<unknown> {
