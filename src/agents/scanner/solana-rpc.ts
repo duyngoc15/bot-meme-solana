@@ -71,12 +71,23 @@ export interface AccountInfo {
             decimals: number;
             uiAmount: number | null;
           };
+          // Token-2022 extensions (only present for spl-token-2022 mints)
+          extensions?: Array<{
+            extension: string;
+            state: Record<string, any>;
+          }>;
         };
         type: string;
       };
+      // 'spl-token' for basic SPL Token, 'spl-token-2022' for Token-2022
       program: string;
     };
   } | null;
+}
+
+export interface MultipleAccountsResponse {
+  context: { slot: number; apiVersion?: string };
+  value: Array<AccountInfo['value']>;
 }
 
 export interface TokenLargestAccountsResponse {
@@ -135,6 +146,15 @@ export class SolanaRPCClient {
       { encoding: 'jsonParsed' },
     ]);
     return result as AccountInfo;
+  }
+
+  // getMultipleAccounts fetches parsed account data for multiple accounts
+  async getMultipleAccounts(addresses: string[]): Promise<MultipleAccountsResponse> {
+    const result = await this.call('getMultipleAccounts', [
+      addresses,
+      { encoding: 'jsonParsed', commitment: 'confirmed' },
+    ]);
+    return result as MultipleAccountsResponse;
   }
 
   // getTokenLargestAccounts fetches top 20 largest token holders

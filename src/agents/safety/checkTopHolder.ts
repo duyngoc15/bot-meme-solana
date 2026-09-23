@@ -45,23 +45,37 @@ async function fetchTokenAccountOwners(
     tokenAccounts: string[],
     rpcClient: SolanaRPCClient
 ): Promise<string[]> {
-    const results = await Promise.all(
-        tokenAccounts.map(async (account) => {
-            try {
-                const info = await rpcClient.getParsedAccountInfo(account);
-                return info?.value?.data?.parsed?.info?.owner ?? 'unknown';
-            } catch {
-                return 'unknown';
-            }
-        })
-    );
-    return results;
+    if (tokenAccounts.length === 0) return [];
+    try {
+        const response = await rpcClient.getMultipleAccounts(tokenAccounts);
+        return response.value.map(acc => {
+            if (!acc) return 'unknown';
+            const owner = (acc.data as any)?.parsed?.info?.owner;
+            return typeof owner === 'string' ? owner : 'unknown';
+        });
+    } catch (err) {
+        console.warn('HolderCheck: getMultipleAccounts failed, falling back to individual calls:', err);
+        const results = await Promise.all(
+            tokenAccounts.map(async (account) => {
+                try {
+                    const info = await rpcClient.getParsedAccountInfo(account);
+                    return info?.value?.data?.parsed?.info?.owner ?? 'unknown';
+                } catch {
+                    return 'unknown';
+                }
+            })
+        );
+        return results;
+    }
 }
 
 // ── Main method ────────────────────────────────────────────────
+// mode: 'pre-buy'    → delay 3s, check nhanh (concentration, bundle, creator) để mua sớm
+//       'monitoring'  → không delay, check đầy đủ (early sell, organic trend) để giám sát sau mua
 export async function checkTopHolderConcentration(
     token: PreFilteredToken,
-    rpcClient: SolanaRPCClient
+    rpcClient: SolanaRPCClient,
+    mode: 'pre-buy' | 'monitoring' = 'pre-buy'
 ): Promise<HolderCheckResult> {
     const mintAddress = token.token.tokenAddress;
     const creatorAddress = token.token.creatorAddress;
@@ -69,12 +83,19 @@ export async function checkTopHolderConcentration(
     const lpMint = token.token.metadata['lp_mint'] ?? '';
     const poolAddress = token.token.metadata['pool'] ?? '';
 
-    const EXCLUDE_ADDRESSES = new Set([
-        lpMint,
-        poolAddress,
-        '11111111111111111111111111111111',
-        'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-    ].filter(Boolean));
+    // ── Delay/Sleep để gom đủ transactions cho bundle check ────
+    const nowSec = Math.floor(Date.now() / 1000);
+    const age = nowSec - migrateTS;
+    if (mode === 'pre-buy') {
+        // Pre-buy: chỉ cần 3s để RPC ghi nhận block 1-3 (mỗi block ~400ms)
+        const PRE_BUY_DELAY = 3;
+        if (age < PRE_BUY_DELAY) {
+            const delayMs = (PRE_BUY_DELAY - age) * 1000;
+            console.log(`HolderCheck [pre-buy]: Token ${mintAddress.substring(0, 16)}... is ${age}s old. Sleeping ${delayMs}ms to collect block 1-3 data...`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+    // Monitoring mode: không delay, data đã đủ
 
     try {
         // ── Step 1: Fetch % concentration + supply song song ──────
@@ -88,27 +109,43 @@ export async function checkTopHolderConcentration(
             return buildDropResult(['zero_supply']);
         }
 
-        // Filter pool/lp accounts
-        const filtered = largestAccounts.value.filter(
-            acc => !EXCLUDE_ADDRESSES.has(acc.address)
+        // Fetch owners cho toàn bộ largest accounts để lọc pool chính xác
+        const rawAccounts = largestAccounts.value;
+        const rawOwners = await fetchTokenAccountOwners(
+            rawAccounts.map(acc => acc.address),
+            rpcClient
         );
 
-        if (filtered.length === 0) {
+        const EXCLUDE_OWNERS = new Set([
+            '5Q52156xR2Ju1ALt3ZY1m8GfvgpGGd16FBio9CGLCwcx', // Raydium Authority V4
+            '675kPX9MHTjS2zt1qAx1xee1Fy2yaAiJ6t6bAc33GLS7', // Raydium AMM Program
+            '6EF8rrect5CQwVmPMiW47Zx7t1HE9nmXTywu2R39157', // Pump.fun Program
+            '11111111111111111111111111111111',             // System Program / Burn Address
+            'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',  // Token Program
+            poolAddress,
+            lpMint,
+        ].filter(Boolean));
+
+        // Lọc bỏ pool accounts dựa trên ví Owner của tài khoản đó
+        const filteredHolders = rawAccounts.map((acc, idx) => ({
+            tokenAccount: acc.address,
+            owner: rawOwners[idx] ?? 'unknown',
+            amount: BigInt(acc.amount),
+            percent: Number((BigInt(acc.amount) * 10000n) / totalSupply) / 100,
+        })).filter(h => 
+            !EXCLUDE_OWNERS.has(h.tokenAccount) && 
+            !EXCLUDE_OWNERS.has(h.owner)
+        );
+
+        if (filteredHolders.length === 0) {
             return buildDropResult(['no_real_holders']);
         }
 
-        // Tính % từng account
-        const holderPercents = filtered.map(acc => ({
-            tokenAccount: acc.address,
-            amount: BigInt(acc.amount),
-            percent: Number((BigInt(acc.amount) * 10000n) / totalSupply) / 100,
-        }));
-
-        const top1Percent = holderPercents[0]?.percent ?? 0;
-        const top5Percent = holderPercents
+        const top1Percent = filteredHolders[0]?.percent ?? 0;
+        const top5Percent = filteredHolders
             .slice(0, 5)
             .reduce((sum, h) => sum + h.percent, 0);
-        const holderCount = filtered.length;
+        const holderCount = filteredHolders.length;
 
         console.log(
             `HolderCheck: ${mintAddress.substring(0, 16)}... ` +
@@ -130,26 +167,27 @@ export async function checkTopHolderConcentration(
                 { top1Percent, top5Percent, holderCount }
             );
         }
-        if (holderCount < 5) {
+
+        // Check "Số holder thật có tăng lên hay không":
+        // Nếu số holder thật hiện tại (đã lọc pool và creator) <= 2 -> LOẠI (không tăng)
+        const realHoldersCount = filteredHolders.filter(h => h.owner !== creatorAddress).length;
+        if (realHoldersCount <= 2) {
+            return buildDropResult(
+                ['holder_count_not_increasing'],
+                { top1Percent, top5Percent, holderCount }
+            );
+        }
+
+        if (realHoldersCount < 5) {
             return buildDropResult(
                 ['insufficient_holder_count'],
                 { top1Percent, top5Percent, holderCount }
             );
         }
 
-        // ── Step 2: Fetch owner của top 10 accounts ───────────────
-        const top10 = holderPercents.slice(0, 10);
-        const owners = await fetchTokenAccountOwners(
-            top10.map(h => h.tokenAccount),
-            rpcClient
-        );
-
-        const holderInfos: HolderInfo[] = top10.map((h, i) => ({
-            tokenAccount: h.tokenAccount,
-            owner: owners[i] ?? 'unknown',
-            amount: h.amount,
-            percent: h.percent,
-        }));
+        // ── Step 2: Lấy thông tin top 10 holders ──────────────────
+        // (Chúng ta đã fetch owner ở Step 1 rồi, nên chỉ việc slice)
+        const holderInfos: HolderInfo[] = filteredHolders.slice(0, 10);
 
         // Check creator holding
         const creatorHolding = holderInfos
@@ -164,91 +202,187 @@ export async function checkTopHolderConcentration(
         }
 
         // ── Step 3: Fetch transactions song song ──────────────────
-        // Dùng ATA thay vì owner wallet để tránh false positive:
-        //   - ATA chỉ chứa tx liên quan đúng token này
-        //   - Loại bỏ false positive từ SOL transfer, swap token khác
+        // Pre-buy: chỉ cần fetch mint signatures để check bundle block 1-3
+        // Monitoring: fetch thêm holder signatures để check early sell
         const topHolderATAs = holderInfos
             .slice(0, 5)
             .map(h => h.tokenAccount)
             .filter(a => a !== '');
 
-        const [mintSigs, ...holderSigs] = await Promise.all([
-            rpcClient.getSignaturesForAddress(mintAddress, 30),
-            ...topHolderATAs.map(ata =>
-                rpcClient.getSignaturesForAddress(ata, 10)
-            ),
-        ]);
+        let mintSigs: Awaited<ReturnType<typeof rpcClient.getSignaturesForAddress>>;
+        let holderSigs: Awaited<ReturnType<typeof rpcClient.getSignaturesForAddress>>[] = [];
 
-        // ── Step 3a: Early bundle check ───────────────────────────
+        if (mode === 'monitoring') {
+            // Monitoring: fetch cả mint + holder signatures song song
+            const [_mintSigs, ..._holderSigs] = await Promise.all([
+                rpcClient.getSignaturesForAddress(mintAddress, 100),
+                ...topHolderATAs.map(ata =>
+                    rpcClient.getSignaturesForAddress(ata, 10)
+                ),
+            ]);
+            mintSigs = _mintSigs;
+            holderSigs = _holderSigs;
+        } else {
+            // Pre-buy: chỉ fetch mint signatures (nhanh hơn, ít RPC calls)
+            mintSigs = await rpcClient.getSignaturesForAddress(mintAddress, 50);
+        }
+
         // Tìm migration slot làm baseline để detect coordinated bundle
-        const migrationSlot = mintSigs.find(
+        const migrationTx = mintSigs.find(
             s => s.blockTime !== null && Math.abs(s.blockTime - migrateTS) < 5
-        )?.slot ?? 0;
+        );
+        const migrationSlot = migrationTx?.slot ?? 0;
 
         let earlyBuyerCount = 0;
+        let block1Buyers = new Set<string>();
+        let block1To3Buyers = new Set<string>();
+
         if (migrationSlot === 0) {
-            // Không tìm được slot → có thể RPC chưa index kịp hoặc blockTime lệch
-            // Skip early bundle check, không drop — tránh bỏ lỡ token tốt
             console.warn(
                 `HolderCheck: Migration slot not found for ${mintAddress.substring(0, 16)}... ` +
                 `(migrateTS: ${migrateTS}) — skipping early bundle check`
             );
         } else {
-            const earlyBuyers = mintSigs.filter(sig =>
+            // Lọc các transactions trong block 1 - 3
+            const earlySigs = mintSigs.filter(sig =>
                 sig.err === null &&
-                sig.slot > migrationSlot &&
+                sig.slot >= migrationSlot &&
                 sig.slot - migrationSlot <= 3
             );
-            earlyBuyerCount = earlyBuyers.length;
 
-            console.log(
-                `HolderCheck: Early buyers in first 3 blocks: ${earlyBuyerCount} ` +
-                `(migrationSlot: ${migrationSlot})`
+            // Fetch details cho các early transactions này (tối đa 15 txs để tránh rate limit)
+            const earlyTxsDetails = await Promise.all(
+                earlySigs.slice(0, 15).map(sig => rpcClient.getTransaction(sig.signature))
             );
 
-            if (earlyBuyerCount > 3) {
+            for (const txDetail of earlyTxsDetails) {
+                if (!txDetail || !txDetail.transaction || txDetail.meta?.err) continue;
+                const accountKeys = txDetail.transaction.message.accountKeys;
+                const signer = accountKeys[0];
+                if (!signer || signer === creatorAddress || EXCLUDE_OWNERS.has(signer)) continue;
+
+                const slot = txDetail.slot;
+
+                // Xác thực xem transaction này có thực sự là MUA token không (số dư token tăng)
+                const preBalance = txDetail.meta?.preTokenBalances?.find(b => b.mint === mintAddress && b.owner === signer);
+                const postBalance = txDetail.meta?.postTokenBalances?.find(b => b.mint === mintAddress && b.owner === signer);
+                const preAmount = preBalance ? BigInt(preBalance.uiTokenAmount.amount) : 0n;
+                const postAmount = postBalance ? BigInt(postBalance.uiTokenAmount.amount) : 0n;
+
+                if (postAmount > preAmount) {
+                    if (slot === migrationSlot || slot - migrationSlot === 1) {
+                        block1Buyers.add(signer);
+                    }
+                    if (slot - migrationSlot <= 3) {
+                        block1To3Buyers.add(signer);
+                    }
+                }
+            }
+
+            earlyBuyerCount = block1To3Buyers.size;
+
+            console.log(
+                `HolderCheck: Unique early buyers in first 3 blocks: ${earlyBuyerCount} ` +
+                `(migrationSlot: ${migrationSlot}, block 1 unique buyers: ${block1Buyers.size})`
+            );
+
+            // Có ví mua trong block đầu tiên mà trên 3 ví là loại (Bundle)
+            if (block1Buyers.size > 3) {
                 return buildDropResult(
-                    [`early_bundle_${earlyBuyerCount}_buyers`],
-                    { top1Percent, top5Percent, holderCount, creatorHolding, earlyBuyerCount }
+                    [`early_bundle_${block1Buyers.size}_buyers_block_1`],
+                    { top1Percent, top5Percent, holderCount, creatorHolding, earlyBuyerCount: block1Buyers.size }
                 );
             }
         }
 
-        // ── Step 3b: Early sell check ─────────────────────────────
-        // Check ATA của top holders có tx trong 2 phút đầu không
-        // Dùng ATA → chỉ tx của token này, không có false positive
-        const twoMinutesAfterMigrate = migrateTS + 120;
-        const earlySellerCount = holderSigs.filter(sigs =>
-            sigs.some(sig =>
+        // ── Step 3b: Early sell check (chỉ chạy ở monitoring mode) ──
+        // Pre-buy: bỏ qua vì chưa đủ thời gian để top holder kịp bán
+        // Monitoring: check top holders có bán trong 2 phút đầu không
+        let earlySellerCount = 0;
+        let activityCount = 0;
+
+        if (mode === 'monitoring') {
+            const twoMinutesAfterMigrate = migrateTS + 120;
+            const earlySellsByTopHolders: Array<{ owner: string, signature: string }> = [];
+
+            for (let i = 0; i < holderInfos.slice(0, 5).length; i++) {
+                const holder = holderInfos[i];
+                const sigs = holderSigs[i] ?? [];
+                const earlySigsOfHolder = sigs.filter(sig =>
+                    sig.err === null &&
+                    sig.blockTime !== null &&
+                    sig.blockTime >= migrateTS &&
+                    sig.blockTime <= twoMinutesAfterMigrate
+                );
+
+                if (earlySigsOfHolder.length > 0) {
+                    const txDetails = await Promise.all(
+                        earlySigsOfHolder.slice(0, 3).map(sig => rpcClient.getTransaction(sig.signature))
+                    );
+
+                    for (const txDetail of txDetails) {
+                        if (!txDetail || !txDetail.transaction || txDetail.meta?.err) continue;
+
+                        const accountKeys = txDetail.transaction.message.accountKeys;
+                        const accountIdx = accountKeys.indexOf(holder.tokenAccount);
+                        if (accountIdx === -1) continue;
+
+                        const preBalance = txDetail.meta?.preTokenBalances?.find(b => b.accountIndex === accountIdx && b.mint === mintAddress);
+                        const postBalance = txDetail.meta?.postTokenBalances?.find(b => b.accountIndex === accountIdx && b.mint === mintAddress);
+
+                        const preAmount = preBalance ? BigInt(preBalance.uiTokenAmount.amount) : 0n;
+                        const postAmount = postBalance ? BigInt(postBalance.uiTokenAmount.amount) : 0n;
+
+                        if (postAmount < preAmount) {
+                            earlySellsByTopHolders.push({
+                                owner: holder.owner,
+                                signature: txDetail.transaction.signatures[0],
+                            });
+                            break; // Đã xác định holder này bán, dừng check tx khác của họ
+                        }
+                    }
+                }
+            }
+
+            earlySellerCount = earlySellsByTopHolders.length;
+            console.log(
+                `HolderCheck [monitoring]: Top holders confirmed selling in first 2 minutes: ${earlySellerCount}`
+            );
+
+            if (earlySellerCount >= 1) {
+                return buildDropResult(
+                    [`early_sell_by_top_holder_${earlySellsByTopHolders[0].owner.substring(0, 8)}`],
+                    { top1Percent, top5Percent, holderCount, creatorHolding, earlyBuyerCount, earlySellerCount }
+                );
+            }
+
+            // ── Step 3c: Holder count trend (30s đầu) ─────────────────
+            // Lấy transactions của token trong 30s đầu
+            const txsInFirst30s = mintSigs.filter(sig =>
                 sig.err === null &&
                 sig.blockTime !== null &&
                 sig.blockTime >= migrateTS &&
-                sig.blockTime <= twoMinutesAfterMigrate
-            )
-        ).length;
-
-        console.log(
-            `HolderCheck: Top holders with activity in first 2 minutes: ${earlySellerCount}`
-        );
-
-        if (earlySellerCount >= 2) {
-            return buildDropResult(
-                [`early_sell_${earlySellerCount}_holders`],
-                { top1Percent, top5Percent, holderCount, creatorHolding, earlyBuyerCount, earlySellerCount }
+                sig.blockTime <= migrateTS + 30
             );
+
+            // Số holder thật có tăng lên hay không:
+            // Đếm số lượng organic transactions mua mới sau block 3 trong 30s đầu
+            const organicTxsIn30s = txsInFirst30s.filter(sig => 
+                migrationSlot > 0 && sig.slot - migrationSlot > 3
+            );
+
+            activityCount = txsInFirst30s.length;
+            console.log(
+                `HolderCheck [monitoring]: Total transactions in first 30s: ${activityCount}, organic txs after block 3: ${organicTxsIn30s.length}`
+            );
+
+            if (organicTxsIn30s.length === 0) {
+                return buildDropResult(
+                    ['no_organic_buyers_in_30s'],
+                    { top1Percent, top5Percent, holderCount, creatorHolding, earlyBuyerCount, earlySellerCount, activityCount }
+                );
+            }
         }
-
-        // ── Step 3c: Activity trend in first 60s ─────────────────
-        const activityCount = mintSigs.filter(sig =>
-            sig.err === null &&
-            sig.blockTime !== null &&
-            sig.blockTime >= migrateTS &&
-            sig.blockTime <= migrateTS + 60
-        ).length;
-
-        console.log(
-            `HolderCheck: Activity in first 60s: ${activityCount} txs`
-        );
 
         // ── Tổng hợp warnings ─────────────────────────────────────
         const reasons: string[] = [];
@@ -268,11 +402,12 @@ export async function checkTopHolderConcentration(
         if (holderCount < 15) {
             reasons.push('low_holder_count');
         }
-        if (earlySellerCount === 1) {
-            reasons.push('one_early_seller_warning');
-        }
-        if (activityCount < 3) {
-            reasons.push('low_early_activity');
+
+        // Kiểm tra xem có insider (mua block 1-3) nào nằm trong top 5 holders không để warning
+        const top5Owners = holderInfos.slice(0, 5).map(h => h.owner);
+        const topHoldersWhoAreInsiders = top5Owners.filter(owner => block1To3Buyers.has(owner));
+        if (topHoldersWhoAreInsiders.length > 0) {
+            reasons.push(`insiders_in_top_holders_${topHoldersWhoAreInsiders.length}`);
         }
 
         return {

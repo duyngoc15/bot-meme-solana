@@ -29,19 +29,45 @@ export class StrategyEvaluatorAgent {
 
   private calcWinProb(safety: SafetyReport, offchain: OffChainMetrics, token: PreFilteredToken): number {
     let p = 0.5;
+
+    // Use new riskScore (0-100) and riskDecision
     if (safety.canBuy && safety.canSell) { p += 0.15; token.reasons.push('can_trade'); } else return 0;
-    if (safety.honeypotScore < 0.1) { p += 0.10; token.reasons.push('low_honeypot_score'); }
-    else if (safety.honeypotScore > this.config.maxHoneypotScore) { p -= 0.20; token.reasons.push('high_honeypot_score'); }
-    if (safety.liquidityLocked) { p += 0.08; token.reasons.push('liquidity_locked'); }
-    if (safety.ownerControls.renounced) { p += 0.07; token.reasons.push('owner_renounced'); }
-    if (!safety.ownerControls.hasBlacklist && !safety.ownerControls.hasTransferHook) { p += 0.05; token.reasons.push('no_transfer_restrictions'); }
+
+    // riskScore: higher = safer. Map to probability bonus/penalty
+    // Score >= 80: very safe → +0.10
+    // Score 60-79: moderate → +0.03
+    // Score < 60: risky → -0.15
+    if (safety.riskScore >= 80) { p += 0.10; token.reasons.push('high_risk_score'); }
+    else if (safety.riskScore >= 60) { p += 0.03; token.reasons.push('moderate_risk_score'); }
+    else { p -= 0.15; token.reasons.push('low_risk_score'); }
+
+    // Risk level check
+    if (safety.riskLevel === 'LOW') { p += 0.08; token.reasons.push('low_risk_level'); }
+
+    // Owner controls (mint authority renounced)
+    if (safety.ownerControls.mintAuthorityRevoked) { p += 0.07; token.reasons.push('owner_renounced'); }
+
+    // No dangerous extensions
+    if (!safety.ownerControls.hasPermanentDelegate && !safety.ownerControls.hasTransferHook) {
+      p += 0.05; token.reasons.push('no_transfer_restrictions');
+    }
+
+    // LP status
+    if (safety.liquidityMetrics.lpLocked || safety.liquidityMetrics.lpBurned) {
+      p += 0.08; token.reasons.push('liquidity_secured');
+    }
+
+    // Off-chain signals
     if (offchain.volume24hDEX >= this.config.minVolumeDEX) { p += 0.10; token.reasons.push('good_dex_volume'); }
     let mentions = 0; for (const c of Object.values(offchain.socialMentions)) mentions += c;
     if (mentions > 50) { p += 0.08; token.reasons.push('social_activity'); }
     if (offchain.velocity === 'rising') { p += 0.07; token.reasons.push('rising_velocity'); } else if (offchain.velocity === 'falling') p -= 0.10;
+
+    // Liquidity balance
     const total = token.token.initialLiquidity.reserveNative + token.token.initialLiquidity.reserveToken;
     const ratio = total > 0 ? token.token.initialLiquidity.reserveNative / total : 0;
     if (ratio < 0.3 || ratio > 0.7) { token.reasons.push('liquidity_imbalance'); p -= 0.05; }
+
     if (token.priority === 'high') p += 0.05; else if (token.priority === 'low') p -= 0.05;
     return Math.max(0, Math.min(1, p));
   }
@@ -55,8 +81,9 @@ export class StrategyEvaluatorAgent {
   }
 
   private calcConfidence(safety: SafetyReport, offchain: OffChainMetrics, wp: number): 'high' | 'medium' | 'low' {
-    if (wp >= 0.85 && safety.honeypotScore < 0.1 && offchain.volume24hDEX > this.config.minVolumeDEX) return 'high';
-    if (wp >= 0.70 && safety.honeypotScore < 0.2) return 'medium';
+    // Use riskScore instead of honeypotScore
+    if (wp >= 0.85 && safety.riskScore >= 80 && offchain.volume24hDEX > this.config.minVolumeDEX) return 'high';
+    if (wp >= 0.70 && safety.riskScore >= 60) return 'medium';
     return 'low';
   }
 

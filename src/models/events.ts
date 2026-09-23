@@ -1,6 +1,10 @@
 // Chain represents supported blockchain networks
 export type Chain = 'solana' | 'base';
 
+// Risk decision levels from the scoring engine
+export type RiskDecision = 'STRONG_BUY' | 'BUY' | 'SMALL_POSITION' | 'WATCHLIST' | 'SKIP' | 'REJECT';
+export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH';
+
 // TokenFound event from ChainScannerAgent
 export interface TokenFound {
   chain: Chain;
@@ -27,40 +31,109 @@ export interface PreFilteredToken {
   reasons: string[];
 }
 
-// SafetyReport from OnChainSafetyAgent
+// ── Token-2022 Extension Info ───────────────────────────────────
+
+export interface Token2022ExtensionInfo {
+  name: string;
+  critical: boolean;   // true = this extension affects safety scoring
+  state: Record<string, any>;
+}
+
+// ── Safety Metrics ──────────────────────────────────────────────
+
+// OwnerControls - shared between SPL Token and Token-2022
+export interface OwnerControls {
+  // Basic authorities (both SPL Token & Token-2022)
+  mintAuthorityRevoked: boolean;
+  freezeAuthorityRevoked: boolean;
+
+  // Token-2022 specific flags
+  hasTransferHook: boolean;
+  hasPermanentDelegate: boolean;
+  isPausable: boolean;
+  hasMintCloseAuthority: boolean;
+  isNonTransferable: boolean;
+  defaultAccountStateFrozen: boolean;
+  transferFeeBps: number;       // basis points (0-10000), 0 for SPL Token
+  transferFeePercent: number;   // 0.0 - 100.0, 0 for SPL Token
+}
+
+// Holder metrics for scoring
+export interface HolderMetrics {
+  creatorHoldingPct: number;
+  top10HoldingPct: number;
+  holderCount: number;
+}
+
+// Liquidity metrics for scoring
+export interface LiquidityMetrics {
+  liquidityUsd: number;
+  lpLocked: boolean;
+  lpBurned: boolean;
+  creatorOwnsLP: boolean;
+}
+
+// Simulation metrics for scoring
+export interface SimulationMetrics {
+  buySuccess: boolean;
+  sellSuccess: boolean;
+  roundTripLossPct: number;     // % loss from buy→sell round trip
+}
+
+// SimulatedSellResult details (AMM math calculation)
+export interface SimulatedSellResult {
+  success: boolean;
+  slippage: number;              // price impact khi bán
+  priceImpactBuy?: number;       // price impact khi mua
+  solReceivedNoPump?: number;    // SOL nhận được nếu giá không đổi
+  netProfitAt25pct?: number;     // net profit nếu giá tăng 25%
+  netProfitAt2x?: number;        // net profit nếu giá tăng 2x
+  roundTripLossPct?: number;     // % loss from buy→sell
+}
+
+// Score breakdown by category
+export interface ScoreBreakdown {
+  simulation: number;      // raw score before weighting
+  tokenRisk: number;       // raw score before weighting
+  holderAndLP: number;     // raw score before weighting
+  momentum: number;        // raw score before weighting
+}
+
+// ── SafetyReport ────────────────────────────────────────────────
+
 export interface SafetyReport {
   tokenAddress: string;
   chain: Chain;
+
+  // New risk scoring system (0-100, higher = safer)
+  riskScore: number;
+  riskDecision: RiskDecision;
+  riskLevel: RiskLevel;
+
+  // Legacy compat fields
   canBuy: boolean;
   canSell: boolean;
-  honeypotScore: number; // 0..1
-  liquidityLocked: boolean;
+
+  // Token program type: distinguishes SPL Token from Token-2022
+  tokenProgram: 'spl-token' | 'spl-token-2022';
+
+  // Detailed breakdowns
   ownerControls: OwnerControls;
+  token2022Extensions: Token2022ExtensionInfo[];  // empty [] for basic SPL Token
+  holderMetrics: HolderMetrics;
+  liquidityMetrics: LiquidityMetrics;
+  simulationMetrics: SimulationMetrics;
   simulatedSell: SimulatedSellResult;
+
+  // Score breakdown by category
+  scoreBreakdown: ScoreBreakdown;
+
   reasons: string[];
   evaluatedAt: Date;
 }
 
-// OwnerControls details
-export interface OwnerControls {
-  renounced: boolean;
-  hasBlacklist: boolean;
-  maxTxLimit?: number;
-  taxFee?: number;
-  hasTransferHook: boolean;
-}
+// ── OffChainMetrics ─────────────────────────────────────────────
 
-// SimulatedSellResult details
-export interface SimulatedSellResult {
-  success: boolean;
-  slippage: number;          // price impact khi bán
-  priceImpactBuy?: number;   // price impact khi mua
-  solReceivedNoPump?: number; // SOL nhận được nếu giá không đổi
-  netProfitAt25pct?: number; // net profit nếu giá tăng 25%
-  netProfitAt2x?: number;    // net profit nếu giá tăng 2x
-}
-
-// OffChainMetrics from OffChainDataAgent
 export interface OffChainMetrics {
   tokenAddress: string;
   volume24hCEX: number;
@@ -73,7 +146,8 @@ export interface OffChainMetrics {
   evaluatedAt: Date;
 }
 
-// StrategyDecision from StrategyEvaluatorAgent
+// ── StrategyDecision ────────────────────────────────────────────
+
 export interface StrategyDecision {
   tokenAddress: string;
   chain: Chain;
@@ -90,7 +164,8 @@ export interface StrategyDecision {
   rationale: string[];
 }
 
-// CandidateToken for listing queue
+// ── CandidateToken ──────────────────────────────────────────────
+
 export interface CandidateToken {
   token: TokenFound;
   safetyReport: SafetyReport;
@@ -100,7 +175,8 @@ export interface CandidateToken {
   status: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed';
 }
 
-// ExecutionResult from ExecutionAgent
+// ── ExecutionResult ─────────────────────────────────────────────
+
 export interface ExecutionResult {
   tokenAddress: string;
   chain: Chain;
@@ -113,7 +189,8 @@ export interface ExecutionResult {
   error?: string;
 }
 
-// RiskControl parameters and state
+// ── RiskControl ─────────────────────────────────────────────────
+
 export interface RiskControl {
   singlePositionPct: number; // max % of balance per trade
   totalExposurePct: number; // max % of total balance exposed

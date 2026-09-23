@@ -23,8 +23,11 @@ export interface Config {
   winProbabilityThreshold: number;
   minVolumeDEX: number;
   minLiquidity: number;
-  maxHoneypotScore: number;
-  maxSlippage: number;
+
+  // Risk engine thresholds
+  minRiskScoreForTrade: number;    // minimum score (0-100) to allow trading
+  maxTransferFeeBps: number;       // max transfer fee in basis points (blocker threshold)
+  transferHookWhitelist: string[]; // whitelisted hook program IDs
 
   // Risk management
   singlePositionPct: number;
@@ -109,17 +112,19 @@ function getEnvList(key: string): string[] {
 
 // LoadConfig loads configuration from environment variables
 export function loadConfig(): Config {
+  const heliusApiKey = getEnv('HELIUS_API_KEY', '');
+
   return {
     // General
     dryRun: getEnvBool('DRY_RUN', true),
     autoExecute: getEnvBool('AUTO_EXECUTE', false),
 
     // Helius API key
-    heliusApiKey: getEnv('HELIUS_API_KEY', ''),
+    heliusApiKey,
 
     // Chain settings
-    solanaRpcUrl: getEnv('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
-    solanaWsUrl: getEnv('SOLANA_WS_URL', 'wss://api.mainnet-beta.solana.com'),
+    solanaRpcUrl: getEnv('SOLANA_RPC_URL', `https://mainnet.helius-rpc.com/?api-key=${heliusApiKey}`),
+    solanaWsUrl: getEnv('SOLANA_WS_URL', `wss://mainnet.helius-rpc.com/?api-key=${heliusApiKey}`),
     baseRpcUrl: getEnv('BASE_RPC_URL', 'https://mainnet.base.org'),
     baseWsUrl: getEnv('BASE_WS_URL', 'wss://mainnet.base.org'),
 
@@ -128,8 +133,11 @@ export function loadConfig(): Config {
     winProbabilityThreshold: getEnvFloat('WIN_PROBABILITY_THRESHOLD', 0.80),
     minVolumeDEX: getEnvFloat('MIN_VOLUME_DEX', 10000.0),
     minLiquidity: getEnvFloat('MIN_LIQUIDITY', 5000.0),
-    maxHoneypotScore: getEnvFloat('MAX_HONEYPOT_SCORE', 0.2),
-    maxSlippage: getEnvFloat('MAX_SLIPPAGE', 0.05),
+
+    // Risk engine thresholds
+    minRiskScoreForTrade: getEnvFloat('MIN_RISK_SCORE_FOR_TRADE', 70),
+    maxTransferFeeBps: getEnvInt('MAX_TRANSFER_FEE_BPS', 1000),
+    transferHookWhitelist: getEnvList('TRANSFER_HOOK_WHITELIST'),
 
     // Risk management
     singlePositionPct: getEnvFloat('SINGLE_POSITION_PCT', 0.01),

@@ -101,11 +101,14 @@ export class Orchestrator {
       return;
     }
 
-    const isHoneypot = safetyReport.honeypotScore >= this.config.maxHoneypotScore;
     const isSafe = this.safety.canTrade(safetyReport);
-    this.telemetry.recordSafetyCheck(isHoneypot, isSafe);
+    this.telemetry.recordSafetyCheck(safetyReport.riskDecision === 'REJECT', isSafe);
     if (!isSafe) {
-      console.log(`Orchestrator: Token ${token.tokenAddress} failed safety check (honeypot score: ${safetyReport.honeypotScore.toFixed(2)})`);
+      console.log(
+        `Orchestrator: Token ${token.tokenAddress} failed safety check ` +
+        `(program: ${safetyReport.tokenProgram}, score: ${safetyReport.riskScore.toFixed(1)}, ` +
+        `decision: ${safetyReport.riskDecision})`
+      );
       return;
     }
 
